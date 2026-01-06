@@ -27,7 +27,7 @@
 
 - [ ] 注册/登录 Cloudflare 账号
 - [ ] 安装 Wrangler CLI（`npm install -g wrangler` 或使用 `backend` 目录的依赖）
-- [ ] 创建 D1 数据库
+- [ ] 创建 D1 数据库（示例名：`botc_chat`）
 - [ ] 拿到 D1 `database_id` 并写入 `backend/wrangler.toml`
 - [ ] 设置 Worker 变量 `TOKEN_SECRET`
 - [ ]（可选）绑定自定义域名
@@ -47,10 +47,10 @@ npm install
 npx wrangler login
 ```
 
-3) 创建 D1：
+3) 创建 D1（示例命名为 `botc_chat`）：
 
 ```bash
-npx wrangler d1 create botc-day-chat
+npx wrangler d1 create botc_chat
 ```
 
 执行后会输出 `database_id`，把它填到 `backend/wrangler.toml` 的 `database_id`。
@@ -58,8 +58,8 @@ npx wrangler d1 create botc-day-chat
 4) 初始化表结构（本地开发与线上都要）：
 
 ```bash
-npx wrangler d1 migrations apply botc-day-chat --local
-npx wrangler d1 migrations apply botc-day-chat
+npx wrangler d1 migrations apply botc_chat --local
+npx wrangler d1 migrations apply botc_chat
 ```
 
 5) 配置开发环境变量：
@@ -70,10 +70,16 @@ npx wrangler d1 migrations apply botc-day-chat
 TOKEN_SECRET=REPLACE_WITH_STRONG_SECRET
 ```
 
-6) 本地启动 Worker：
+6) 本地启动 Worker（默认使用本地模式，避免触发远程预览）：
 
 ```bash
 npx wrangler dev
+```
+
+如需强制本地模式可使用：
+
+```bash
+npx wrangler dev --local
 ```
 
 默认地址为 `http://127.0.0.1:8787`。
@@ -142,7 +148,7 @@ npm run dev
 后端：
 
 ```
-cd backend && npm i && npx wrangler dev
+cd backend && npm i && npx wrangler d1 migrations apply botc_chat --local && npx wrangler dev
 ```
 
 前端：

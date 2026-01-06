@@ -4,13 +4,14 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
+    "dev:local": "wrangler dev --local",
     "deploy": "wrangler deploy",
-    "d1:migrate:local": "wrangler d1 migrations apply botc-day-chat --local",
-    "d1:migrate": "wrangler d1 migrations apply botc-day-chat"
+    "d1:migrate:local": "wrangler d1 migrations apply botc_chat --local",
+    "d1:migrate": "wrangler d1 migrations apply botc_chat"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240117.0",
     "typescript": "^5.6.3",
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.54.0"
   }
 }

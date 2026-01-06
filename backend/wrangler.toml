@@ -2,6 +2,9 @@ name = "botc-day-chat"
 main = "src/worker.ts"
 compatibility_date = "2024-12-01"
 
+[dev]
+local = true
+
 [vars]
 TOKEN_SECRET = "REPLACE_WITH_STRONG_SECRET"
 
@@ -15,5 +18,5 @@ new_classes = ["HallRoom"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "botc-day-chat"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_name = "botc_chat"
+database_id = "30c5204e-1a80-45c5-bf74-37fdaabfdd11"
