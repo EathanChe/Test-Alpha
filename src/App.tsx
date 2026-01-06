@@ -137,6 +137,7 @@ function App() {
   useEffect(() => {
     if (currentView !== 'home' && currentView !== 'browse') return;
     let active = true;
+    let timer: number | null = null;
 
     const loadHalls = async () => {
       try {
@@ -147,11 +148,34 @@ function App() {
       }
     };
 
-    loadHalls();
-    const timer = window.setInterval(loadHalls, 5000);
+    const startPolling = () => {
+      if (timer !== null) return;
+      loadHalls();
+      timer = window.setInterval(loadHalls, 5000);
+    };
+
+    const stopPolling = () => {
+      if (timer === null) return;
+      window.clearInterval(timer);
+      timer = null;
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        loadHalls();
+        startPolling();
+      }
+    };
+
+    startPolling();
+    document.addEventListener('visibilitychange', handleVisibility);
+
     return () => {
       active = false;
-      window.clearInterval(timer);
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, [currentView]);
 

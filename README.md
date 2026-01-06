@@ -6,6 +6,7 @@
 - 说书人创建大厅时生成 `storytellerKey`，管理操作需要携带该 key。
 - 玩家通过大厅码 + 密码加入，密码使用 PBKDF2 + salt 存储。
 - D1 持久化大厅、玩家、消息；Durable Object WebSocket 广播实时消息。
+- 大厅列表采用 5 秒轮询（开发模式下 StrictMode 已避免重复 interval）。
 
 产品需求详情见 [docs/BOTC-Day-Chat-Manager-PRD.md](docs/BOTC-Day-Chat-Manager-PRD.md)。
 
