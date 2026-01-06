@@ -6,7 +6,7 @@ compatibility_date = "2024-12-01"
 local = true
 
 [vars]
-TOKEN_SECRET = "REPLACE_WITH_STRONG_SECRET"
+CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 [[durable_objects.bindings]]
 name = "HALL_ROOM"

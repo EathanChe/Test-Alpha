@@ -1,9 +1,11 @@
 import { HallRoom } from './hallRoom';
 import {
+  CorsOptions,
   corsHeaders,
   createSessionToken,
   hashPassword,
   jsonResponse,
+  parseCorsOrigins,
   randomHallCode,
   readJson,
   verifyPassword,
@@ -16,6 +18,7 @@ export interface Env {
   DB: D1Database;
   HALL_ROOM: DurableObjectNamespace;
   TOKEN_SECRET: string;
+  CORS_ORIGINS?: string;
 }
 
 type HallRow = {
@@ -49,10 +52,11 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 
 export default {
   async fetch(request: Request, env: Env) {
+    const cors = buildCorsOptions(request, env);
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         status: 204,
-        headers: corsHeaders(),
+        headers: corsHeaders(cors),
       });
     }
 
@@ -60,36 +64,36 @@ export default {
     const path = url.pathname;
 
     if (path === '/api/halls' && request.method === 'POST') {
-      return handleCreateHall(request, env);
+      return handleCreateHall(request, env, cors);
     }
 
     if (path === '/api/halls' && request.method === 'GET') {
-      return handleListHalls(env);
+      return handleListHalls(env, cors);
     }
 
     const joinMatch = path.match(/^\/api\/halls\/([^/]+)\/join$/);
     if (joinMatch && request.method === 'POST') {
-      return handleJoinHall(request, env, joinMatch[1]);
+      return handleJoinHall(request, env, joinMatch[1], cors);
     }
 
     const hallMatch = path.match(/^\/api\/halls\/([^/]+)$/);
     if (hallMatch && request.method === 'GET') {
-      return handleGetHall(env, hallMatch[1]);
+      return handleGetHall(env, hallMatch[1], cors);
     }
 
     const messagesMatch = path.match(/^\/api\/halls\/([^/]+)\/messages$/);
     if (messagesMatch && request.method === 'GET') {
-      return handleGetMessages(request, env, messagesMatch[1]);
+      return handleGetMessages(request, env, messagesMatch[1], cors);
     }
 
     const rosterMatch = path.match(/^\/api\/halls\/([^/]+)\/roster$/);
     if (rosterMatch && request.method === 'GET') {
-      return handleGetRoster(request, env, rosterMatch[1]);
+      return handleGetRoster(request, env, rosterMatch[1], cors);
     }
 
     const resetMatch = path.match(/^\/api\/halls\/([^/]+)\/admin\/reset-day$/);
     if (resetMatch && request.method === 'POST') {
-      return handleResetDay(request, env, resetMatch[1]);
+      return handleResetDay(request, env, resetMatch[1], cors);
     }
 
     const wsMatch = path.match(/^\/ws\/halls\/([^/]+)$/);
@@ -97,16 +101,16 @@ export default {
       return handleWebSocket(request, env, wsMatch[1]);
     }
 
-    return jsonResponse({ error: 'Not found' }, { status: 404 });
+    return jsonResponse({ error: 'Not found' }, { status: 404 }, cors);
   },
 };
 
-async function handleCreateHall(request: Request, env: Env) {
+async function handleCreateHall(request: Request, env: Env, cors: CorsOptions) {
   const body = await readJson<CreateHallBody>(request);
   const name = body.name?.trim();
   const password = body.password?.trim();
   if (!name || !password) {
-    return jsonResponse({ error: '缺少大厅名称或密码' }, { status: 400 });
+    return jsonResponse({ error: '缺少大厅名称或密码' }, { status: 400 }, cors);
   }
 
   const { hash, salt } = await hashPassword(password);
@@ -121,10 +125,10 @@ async function handleCreateHall(request: Request, env: Env) {
     .bind(hallId, hallCode, name, hash, salt, 'DAY', 1, 'active', storytellerKey, now, now)
     .run();
 
-  return jsonResponse({ hallId, hallCode, storytellerKey });
+  return jsonResponse({ hallId, hallCode, storytellerKey }, {}, cors);
 }
 
-async function handleListHalls(env: Env) {
+async function handleListHalls(env: Env, cors: CorsOptions) {
   const result = await env.DB.prepare(
     `SELECT
       h.id,
@@ -141,15 +145,15 @@ async function handleListHalls(env: Env) {
     ORDER BY h.created_at DESC`,
   ).all();
 
-  return jsonResponse({ halls: result.results });
+  return jsonResponse({ halls: result.results }, {}, cors);
 }
 
-async function handleJoinHall(request: Request, env: Env, code: string) {
+async function handleJoinHall(request: Request, env: Env, code: string, cors: CorsOptions) {
   const body = await readJson<JoinHallBody>(request);
   const playerName = body.playerName?.trim();
   const password = body.password?.trim();
   if (!playerName || !password) {
-    return jsonResponse({ error: '缺少昵称或密码' }, { status: 400 });
+    return jsonResponse({ error: '缺少昵称或密码' }, { status: 400 }, cors);
   }
 
   const hall = await env.DB.prepare(
@@ -159,12 +163,12 @@ async function handleJoinHall(request: Request, env: Env, code: string) {
     .first<HallRow>();
 
   if (!hall) {
-    return jsonResponse({ error: '大厅不存在' }, { status: 404 });
+    return jsonResponse({ error: '大厅不存在' }, { status: 404 }, cors);
   }
 
   const passwordOk = await verifyPassword(password, hall.password_salt, hall.password_hash);
   if (!passwordOk) {
-    return jsonResponse({ error: '密码不正确' }, { status: 401 });
+    return jsonResponse({ error: '密码不正确' }, { status: 401 }, cors);
   }
 
   const now = Date.now();
@@ -204,20 +208,24 @@ async function handleJoinHall(request: Request, env: Env, code: string) {
     env.TOKEN_SECRET,
   );
 
-  return jsonResponse({
-    playerId,
-    sessionToken,
-    hall: {
-      id: hall.id,
-      code: hall.code,
-      name: hall.name,
-      dayNumber: hall.day_number,
-      phase: hall.phase,
+  return jsonResponse(
+    {
+      playerId,
+      sessionToken,
+      hall: {
+        id: hall.id,
+        code: hall.code,
+        name: hall.name,
+        dayNumber: hall.day_number,
+        phase: hall.phase,
+      },
     },
-  });
+    undefined,
+    cors,
+  );
 }
 
-async function handleGetHall(env: Env, code: string) {
+async function handleGetHall(env: Env, code: string, cors: CorsOptions) {
   const hall = await env.DB.prepare(
     'SELECT id, code, name, day_number as dayNumber, phase FROM halls WHERE code = ? AND status = ? LIMIT 1',
   )
@@ -225,25 +233,25 @@ async function handleGetHall(env: Env, code: string) {
     .first();
 
   if (!hall) {
-    return jsonResponse({ error: '大厅不存在' }, { status: 404 });
+    return jsonResponse({ error: '大厅不存在' }, { status: 404 }, cors);
   }
 
-  return jsonResponse({ hall });
+  return jsonResponse({ hall }, {}, cors);
 }
 
-async function handleGetMessages(request: Request, env: Env, code: string) {
+async function handleGetMessages(request: Request, env: Env, code: string, cors: CorsOptions) {
   const hall = await env.DB.prepare('SELECT id FROM halls WHERE code = ? AND status = ? LIMIT 1')
     .bind(code, 'active')
     .first<{ id: string }>();
 
   if (!hall) {
-    return jsonResponse({ error: '大厅不存在' }, { status: 404 });
+    return jsonResponse({ error: '大厅不存在' }, { status: 404 }, cors);
   }
 
   const token = getToken(request);
   const session = await requireSession(env, hall.id, token);
   if (!session) {
-    return jsonResponse({ error: '未授权' }, { status: 401 });
+    return jsonResponse({ error: '未授权' }, { status: 401 }, cors);
   }
 
   const limit = Math.min(Number(new URL(request.url).searchParams.get('limit') ?? MAX_MESSAGES), 100);
@@ -254,22 +262,22 @@ async function handleGetMessages(request: Request, env: Env, code: string) {
     .all();
 
   const messages = result.results.slice().reverse();
-  return jsonResponse({ messages });
+  return jsonResponse({ messages }, {}, cors);
 }
 
-async function handleGetRoster(request: Request, env: Env, code: string) {
+async function handleGetRoster(request: Request, env: Env, code: string, cors: CorsOptions) {
   const hall = await env.DB.prepare('SELECT id FROM halls WHERE code = ? AND status = ? LIMIT 1')
     .bind(code, 'active')
     .first<{ id: string }>();
 
   if (!hall) {
-    return jsonResponse({ error: '大厅不存在' }, { status: 404 });
+    return jsonResponse({ error: '大厅不存在' }, { status: 404 }, cors);
   }
 
   const token = getToken(request);
   const session = await requireSession(env, hall.id, token);
   if (!session) {
-    return jsonResponse({ error: '未授权' }, { status: 401 });
+    return jsonResponse({ error: '未授权' }, { status: 401 }, cors);
   }
 
   const result = await env.DB.prepare(
@@ -278,14 +286,14 @@ async function handleGetRoster(request: Request, env: Env, code: string) {
     .bind(hall.id)
     .all();
 
-  return jsonResponse({ players: result.results });
+  return jsonResponse({ players: result.results }, {}, cors);
 }
 
-async function handleResetDay(request: Request, env: Env, code: string) {
+async function handleResetDay(request: Request, env: Env, code: string, cors: CorsOptions) {
   const body = await readJson<ResetDayBody>(request);
   const storytellerKey = body.storytellerKey?.trim();
   if (!storytellerKey) {
-    return jsonResponse({ error: '缺少 storytellerKey' }, { status: 400 });
+    return jsonResponse({ error: '缺少 storytellerKey' }, { status: 400 }, cors);
   }
 
   const hall = await env.DB.prepare('SELECT id, storyteller_key FROM halls WHERE code = ? LIMIT 1')
@@ -293,7 +301,7 @@ async function handleResetDay(request: Request, env: Env, code: string) {
     .first<HallRow>();
 
   if (!hall || hall.storyteller_key !== storytellerKey) {
-    return jsonResponse({ error: '无权限操作' }, { status: 403 });
+    return jsonResponse({ error: '无权限操作' }, { status: 403 }, cors);
   }
 
   const now = Date.now();
@@ -314,7 +322,7 @@ async function handleResetDay(request: Request, env: Env, code: string) {
     .bind(hall.id)
     .first();
 
-  return jsonResponse({ hall: updated });
+  return jsonResponse({ hall: updated }, {}, cors);
 }
 
 async function handleWebSocket(request: Request, env: Env, code: string) {
@@ -370,4 +378,11 @@ async function requireSession(env: Env, hallId: string, token: string | null) {
 
   if (!player || player.session_version !== payload.ver) return null;
   return payload;
+}
+
+function buildCorsOptions(request: Request, env: Env): CorsOptions {
+  return {
+    origin: request.headers.get('Origin'),
+    allowedOrigins: parseCorsOrigins(env.CORS_ORIGINS),
+  };
 }

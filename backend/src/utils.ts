@@ -28,18 +28,49 @@ export function base64UrlDecode(data: string) {
   return bytes;
 }
 
-const CORS_ALLOW_ORIGIN = 'http://localhost:5173';
+const DEFAULT_CORS_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
-export function corsHeaders(init?: HeadersInit) {
+export type CorsOptions = {
+  origin?: string | null;
+  allowedOrigins?: string[];
+};
+
+export function parseCorsOrigins(raw?: string | null) {
+  if (!raw) return DEFAULT_CORS_ORIGINS;
+  const origins = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return origins.length > 0 ? origins : DEFAULT_CORS_ORIGINS;
+}
+
+export function resolveCorsOrigin(requestOrigin: string | null, allowedOrigins: string[]) {
+  if (allowedOrigins.includes('*')) {
+    return '*';
+  }
+  if (requestOrigin && allowedOrigins.includes(requestOrigin)) {
+    return requestOrigin;
+  }
+  return allowedOrigins[0] ?? '';
+}
+
+export function corsHeaders(options: CorsOptions = {}, init?: HeadersInit) {
   const headers = new Headers(init);
-  headers.set('Access-Control-Allow-Origin', CORS_ALLOW_ORIGIN);
+  const allowedOrigins = options.allowedOrigins ?? DEFAULT_CORS_ORIGINS;
+  const resolvedOrigin = resolveCorsOrigin(options.origin ?? null, allowedOrigins);
+  if (resolvedOrigin) {
+    headers.set('Access-Control-Allow-Origin', resolvedOrigin);
+    if (resolvedOrigin !== '*') {
+      headers.set('Vary', 'Origin');
+    }
+  }
   headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   return headers;
 }
 
-export function jsonResponse(payload: unknown, init: ResponseInit = {}) {
-  const headers = corsHeaders(init.headers);
+export function jsonResponse(payload: unknown, init: ResponseInit = {}, cors?: CorsOptions) {
+  const headers = corsHeaders(cors, init.headers);
   headers.set('Content-Type', 'application/json');
   const status = init.status ?? 200;
   if (status === 204 || status === 205 || status === 304) {

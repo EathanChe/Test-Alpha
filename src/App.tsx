@@ -42,7 +42,9 @@ type WsPayload =
   | { type: 'presence:update'; players: string[] }
   | { type: 'system'; message: string };
 
-const API_ROOT = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') ?? '';
+const DEFAULT_API_ROOT = 'http://127.0.0.1:8787';
+const RAW_API_ROOT = (import.meta.env.VITE_API_BASE as string | undefined)?.trim();
+const API_ROOT = (RAW_API_ROOT && RAW_API_ROOT.length > 0 ? RAW_API_ROOT : DEFAULT_API_ROOT).replace(/\/$/, '');
 const SESSION_STORAGE_KEY = 'botc-session';
 
 function buildApiUrl(path: string) {

@@ -18,20 +18,21 @@
 │  ├─ src
 │  ├─ package.json
 │  └─ wrangler.toml
+├─ public
+│  └─ _redirects
 ├─ src
 ├─ index.html
 ├─ package.json
 └─ README.md
 ```
 
-## Cloudflare 资源准备清单（必须手动完成）
+## Cloudflare Pages 构建配置
 
-- [ ] 注册/登录 Cloudflare 账号
-- [ ] 安装 Wrangler CLI（`npm install -g wrangler` 或使用 `backend` 目录的依赖）
-- [ ] 创建 D1 数据库（示例名：`botc_chat`）
-- [ ] 拿到 D1 `database_id` 并写入 `backend/wrangler.toml`
-- [ ] 设置 Worker 变量 `TOKEN_SECRET`
-- [ ]（可选）绑定自定义域名
+- Framework：Vite
+- Build command：`npm run build`
+- Output directory：`dist`
+- Root directory：仓库根目录（不是 `backend`）
+- Pages 环境变量：`VITE_API_BASE`（填写你的 Workers URL）
 
 ## 后端（Workers + DO + D1）从 0 启动
 
@@ -56,11 +57,14 @@ npx wrangler d1 create botc_chat
 
 执行后会输出 `database_id`，把它填到 `backend/wrangler.toml` 的 `database_id`。
 
-4) 初始化表结构（本地开发与线上都要）：
+4) 初始化表结构：
 
 ```bash
+# 本地
 npx wrangler d1 migrations apply botc_chat --local
-npx wrangler d1 migrations apply botc_chat
+
+# 线上
+npx wrangler d1 migrations apply botc_chat --remote
 ```
 
 5) 配置开发环境变量：
@@ -69,9 +73,10 @@ npx wrangler d1 migrations apply botc_chat
 
 ```
 TOKEN_SECRET=REPLACE_WITH_STRONG_SECRET
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-6) 本地启动 Worker（默认使用本地模式，避免触发远程预览）：
+6) 本地启动 Worker（默认使用本地模式）：
 
 ```bash
 npx wrangler dev
@@ -88,6 +93,14 @@ npx wrangler dev --local
 7) 部署线上：
 
 ```bash
+# 设置 TOKEN_SECRET（不要写入仓库）
+cd backend
+npx wrangler secret put TOKEN_SECRET
+
+# 设置 CORS_ORIGINS（允许 Pages 域名 + 本地开发）
+# 示例：
+# npx wrangler deploy --var CORS_ORIGINS="http://localhost:5173,https://your-pages.pages.dev"
+
 npx wrangler deploy
 ```
 
@@ -107,11 +120,19 @@ npm install
 VITE_API_BASE=http://127.0.0.1:8787
 ```
 
+未设置 `VITE_API_BASE` 时默认使用 `http://127.0.0.1:8787`。
+
 3) 启动前端：
 
 ```bash
 npm run dev
 ```
+
+## CORS 配置说明
+
+- 后端从 `CORS_ORIGINS` 读取允许的 Origin 列表（逗号分隔）。
+- 预检 OPTIONS 返回 204 且无 body。
+- 所有 JSON API 响应都会附带 CORS headers。
 
 ## API 设计（MVP）
 
@@ -123,6 +144,23 @@ npm run dev
 - `GET /api/halls/:code/roster?token=...` -> 在线玩家列表
 - `POST /api/halls/:code/admin/reset-day` `{storytellerKey}` -> `{hall}`
 - `WS /ws/halls/:code?token=...` 实时通道
+
+## 最短上线清单（Pages + Workers）
+
+1) 后端：
+   - `cd backend && npm i`
+   - `npx wrangler d1 create botc_chat`（拿到 `database_id` 填入 `backend/wrangler.toml`）
+   - `npx wrangler d1 migrations apply botc_chat --remote`
+   - `npx wrangler secret put TOKEN_SECRET`
+   - `npx wrangler deploy --var CORS_ORIGINS="https://YOUR_PAGES.pages.dev"`
+   - 记录 Workers URL（`https://xxx.workers.dev`）
+
+2) 前端（Pages）：
+   - 创建 Pages 项目，Root directory 指向仓库根目录
+   - 设置环境变量 `VITE_API_BASE=https://xxx.workers.dev`
+   - 触发构建，得到 Pages URL
+
+完成后：Pages URL 访问即可连通 Workers。WebSocket 会自动从同一 base 推导。
 
 ## 快速自检（两台设备）
 
@@ -137,23 +175,10 @@ npm run dev
 # 后端
 cd backend
 npm install
+npx wrangler d1 migrations apply botc_chat --local
 npx wrangler dev
 
 # 前端
 npm install
 npm run dev
-```
-
-## 本地联调速记
-
-后端：
-
-```
-cd backend && npm i && npx wrangler d1 migrations apply botc_chat --local && npx wrangler dev
-```
-
-前端：
-
-```
-npm i && npm run dev
 ```
