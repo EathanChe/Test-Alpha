@@ -136,3 +136,17 @@ npx wrangler dev
 npm install
 npm run dev
 ```
+
+## 本地联调速记
+
+后端：
+
+```
+cd backend && npm i && npx wrangler dev
+```
+
+前端：
+
+```
+npm i && npm run dev
+```

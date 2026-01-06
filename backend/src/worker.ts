@@ -1,5 +1,6 @@
 import { HallRoom } from './hallRoom';
 import {
+  corsHeaders,
   createSessionToken,
   hashPassword,
   jsonResponse,
@@ -49,7 +50,10 @@ const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 export default {
   async fetch(request: Request, env: Env) {
     if (request.method === 'OPTIONS') {
-      return jsonResponse({ ok: true }, { status: 204 });
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders(),
+      });
     }
 
     const url = new URL(request.url);

@@ -28,13 +28,24 @@ export function base64UrlDecode(data: string) {
   return bytes;
 }
 
-export function jsonResponse(payload: unknown, init: ResponseInit = {}) {
-  const headers = new Headers(init.headers);
-  headers.set('Content-Type', 'application/json');
-  headers.set('Access-Control-Allow-Origin', '*');
+const CORS_ALLOW_ORIGIN = 'http://localhost:5173';
+
+export function corsHeaders(init?: HeadersInit) {
+  const headers = new Headers(init);
+  headers.set('Access-Control-Allow-Origin', CORS_ALLOW_ORIGIN);
   headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  return new Response(JSON.stringify(payload), { ...init, headers });
+  return headers;
+}
+
+export function jsonResponse(payload: unknown, init: ResponseInit = {}) {
+  const headers = corsHeaders(init.headers);
+  headers.set('Content-Type', 'application/json');
+  const status = init.status ?? 200;
+  if (status === 204 || status === 205 || status === 304) {
+    return new Response(null, { ...init, status, headers });
+  }
+  return new Response(JSON.stringify(payload), { ...init, status, headers });
 }
 
 export async function readJson<T>(request: Request): Promise<T> {
