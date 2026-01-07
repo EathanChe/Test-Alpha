@@ -119,6 +119,11 @@ p {
   transition: transform 0.08s ease, box-shadow 0.2s ease, opacity 0.2s ease;
 }
 
+.btn.small {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .btn:active {
   transform: translateY(1px);
 }
@@ -343,6 +348,12 @@ select:disabled {
   border-radius: 12px;
   background: #f7f1e8;
   border: 1px solid #efe1d1;
+}
+
+.roster-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .message-list {

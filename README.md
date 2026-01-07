@@ -33,6 +33,7 @@
 - Output directory：`dist`
 - Root directory：仓库根目录（不是 `backend`）
 - Pages 环境变量：`VITE_API_BASE`（填写你的 Workers URL）
+  - 生产环境必须配置 `VITE_API_BASE`，否则前端会提示未配置后端。
 
 ## 后端（Workers + DO + D1）从 0 启动
 
@@ -143,6 +144,9 @@ npm run dev
 - `GET /api/halls/:code/messages?token=...` -> 最近消息
 - `GET /api/halls/:code/roster?token=...` -> 在线玩家列表
 - `POST /api/halls/:code/admin/reset-day` `{storytellerKey}` -> `{hall}`
+- `POST /api/halls/:code/admin/phase` `{storytellerKey, action}` -> `{hall}`
+- `POST /api/halls/:code/private-requests` `{targetName}` -> `{request}`
+- `POST /api/halls/:code/private-requests/:id/respond` `{response}` -> `{request, session?}`
 - `WS /ws/halls/:code?token=...` 实时通道
 
 ## 最短上线清单（Pages + Workers）
