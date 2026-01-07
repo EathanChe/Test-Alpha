@@ -8,6 +8,7 @@ import {
   parseCorsOrigins,
   randomHallCode,
   readJson,
+  resolveTokenSecret,
   verifyPassword,
   verifySessionToken,
 } from './utils';
@@ -194,10 +195,6 @@ async function handleJoinHall(request: Request, env: Env, code: string, cors: Co
     return jsonResponse({ error: '大厅不存在' }, { status: 404 }, cors);
   }
 
-  if (hall.phase === 'NIGHT') {
-    return jsonResponse({ error: '黑夜中无法处理私聊请求' }, { status: 403 }, cors);
-  }
-
   const passwordOk = await verifyPassword(password, hall.password_salt, hall.password_hash);
   if (!passwordOk) {
     return jsonResponse({ error: '密码不正确' }, { status: 401 }, cors);
@@ -237,7 +234,7 @@ async function handleJoinHall(request: Request, env: Env, code: string, cors: Co
       ver: sessionVersion,
       exp: now + SESSION_TTL_MS,
     },
-    env.TOKEN_SECRET,
+    getTokenSecret(env),
   );
 
   return jsonResponse(
@@ -719,7 +716,7 @@ function getToken(request: Request) {
 
 async function requireSession(env: Env, hallId: string, token: string | null) {
   if (!token) return null;
-  const payload = await verifySessionToken(token, env.TOKEN_SECRET);
+  const payload = await verifySessionToken(token, getTokenSecret(env));
   if (!payload || payload.hallId !== hallId) return null;
 
   const player = await env.DB.prepare('SELECT session_version FROM players WHERE id = ? AND hall_id = ?')
@@ -747,4 +744,8 @@ async function broadcastToHall(
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+function getTokenSecret(env: Env) {
+  return resolveTokenSecret(env.TOKEN_SECRET);
 }

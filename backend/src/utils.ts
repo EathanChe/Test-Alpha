@@ -1,5 +1,6 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const DEFAULT_TOKEN_SECRET = 'dev-token-secret';
 
 export type SessionPayload = {
   playerId: string;
@@ -144,4 +145,9 @@ export function randomHallCode() {
     code += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
   return code;
+}
+
+export function resolveTokenSecret(secret?: string | null) {
+  const trimmed = secret?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_TOKEN_SECRET;
 }

@@ -1,4 +1,4 @@
-import { jsonResponse, verifySessionToken } from './utils';
+import { jsonResponse, resolveTokenSecret, verifySessionToken } from './utils';
 
 export interface Env {
   DB: D1Database;
@@ -119,7 +119,7 @@ export class HallRoom {
       return new Response('Missing auth headers', { status: 400 });
     }
 
-    const session = await verifySessionToken(token, this.env.TOKEN_SECRET);
+    const session = await verifySessionToken(token, resolveTokenSecret(this.env.TOKEN_SECRET));
     if (!session || session.hallId !== hallId) {
       return new Response('Unauthorized', { status: 401 });
     }
