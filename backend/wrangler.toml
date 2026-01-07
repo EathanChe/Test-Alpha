@@ -14,7 +14,7 @@ class_name = "HallRoom"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["HallRoom"]
+new_sqlite_classes = ["HallRoom"]
 
 [[d1_databases]]
 binding = "DB"
