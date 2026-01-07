@@ -458,12 +458,6 @@ function App() {
   }, [activeHall?.dayNumber]);
 
   useEffect(() => {
-    setSelectedTargets((prev) =>
-      prev.filter((name) => eligibleTargets.some((player) => player.name === name)),
-    );
-  }, [eligibleTargets]);
-
-  useEffect(() => {
     if (!bulletinOpen) return;
     loadBulletins(bulletinScope);
     setBulletinUnread(0);
@@ -493,6 +487,11 @@ function App() {
       ),
     [roster, playerName],
   );
+  useEffect(() => {
+    setSelectedTargets((prev) =>
+      prev.filter((name) => eligibleTargets.some((player) => player.name === name)),
+    );
+  }, [eligibleTargets]);
   const inboundRequest = useMemo(
     () =>
       privateRequests.find(
