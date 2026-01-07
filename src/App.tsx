@@ -32,15 +32,22 @@ type ChatMessage = {
 type RosterEntry = {
   name: string;
   isOnline: boolean;
+  role: 'PLAYER' | 'STORYTELLER';
   inPrivate: boolean;
 };
 
 type PrivateRequest = {
   id: string;
   initiatorName: string;
-  targetName: string;
-  status: 'PENDING' | 'ACCEPTED' | 'REJECTED';
+  status: 'PENDING' | 'DECISION' | 'COMPLETED' | 'CANCELED';
   createdAt: number;
+  expiresAt: number;
+  dayNumber: number;
+  targets: {
+    name: string;
+    status: 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'TIMEOUT';
+    respondedAt: number | null;
+  }[];
 };
 
 type PrivateSession = {
@@ -58,6 +65,15 @@ type PrivateMessage = {
   sessionId: string;
   sender: string;
   content: string;
+  createdAt: number;
+};
+
+type BulletinEvent = {
+  id: string;
+  hallId: string;
+  dayNumber: number;
+  type: 'PRIVATE_START' | 'PRIVATE_END';
+  participants: string[];
   createdAt: number;
 };
 
@@ -86,6 +102,7 @@ type WsPayload =
   | { type: 'private:session-start'; session: PrivateSession }
   | { type: 'private:session-end'; sessionId: string; endedByName: string | null }
   | { type: 'private:message'; message: PrivateMessage }
+  | { type: 'bulletin:new'; event: BulletinEvent }
   | { type: 'system'; message: string };
 
 const DEFAULT_API_ROOT = 'http://127.0.0.1:8787';
@@ -154,6 +171,12 @@ function App() {
   const [privateSessions, setPrivateSessions] = useState<PrivateSession[]>([]);
   const [privateMessages, setPrivateMessages] = useState<Record<string, PrivateMessage[]>>({});
   const [activePrivateSessionId, setActivePrivateSessionId] = useState<string | null>(null);
+  const [selectedTargets, setSelectedTargets] = useState<string[]>([]);
+  const [bulletinEvents, setBulletinEvents] = useState<BulletinEvent[]>([]);
+  const [bulletinUnread, setBulletinUnread] = useState(0);
+  const [bulletinOpen, setBulletinOpen] = useState(false);
+  const [bulletinScope, setBulletinScope] = useState<'today' | 'all'>('today');
+  const [clock, setClock] = useState(Date.now());
 
   const [notice, setNotice] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'offline' | 'connecting' | 'online'>('offline');
@@ -171,11 +194,14 @@ function App() {
 
   const [chatDraft, setChatDraft] = useState('');
   const [privateDraft, setPrivateDraft] = useState('');
-  const [inboundRequest, setInboundRequest] = useState<PrivateRequest | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
+  const bulletinOpenRef = useRef(false);
+  const bulletinScopeRef = useRef<'today' | 'all'>('today');
+  const activeHallRef = useRef<HallDetail | null>(null);
+  const previousDayRef = useRef<number | null>(null);
 
   useEffect(() => {
     const cached = sessionStorage.getItem(SESSION_STORAGE_KEY);
@@ -200,10 +226,28 @@ function App() {
   }, []);
 
   useEffect(() => {
+    bulletinOpenRef.current = bulletinOpen;
+  }, [bulletinOpen]);
+
+  useEffect(() => {
+    bulletinScopeRef.current = bulletinScope;
+  }, [bulletinScope]);
+
+  useEffect(() => {
+    activeHallRef.current = activeHall;
+  }, [activeHall]);
+
+  useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(null), 3000);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  useEffect(() => {
+    if (!activeHall) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [activeHall?.id]);
 
   useEffect(() => {
     if (currentView !== 'home' && currentView !== 'browse') return;
@@ -283,12 +327,6 @@ function App() {
             if (payload.hall) {
               setActiveHall(payload.hall);
             }
-            const pending = payload.privateRequests.find(
-              (request) => request.targetName === playerName && request.status === 'PENDING',
-            );
-            if (pending) {
-              setInboundRequest(pending);
-            }
           }
           if (payload.type === 'chat:new') {
             setMessages((prev) => [...prev, payload.message]);
@@ -303,9 +341,6 @@ function App() {
             setPrivateRequests((prev) =>
               prev.some((item) => item.id === payload.request.id) ? prev : [...prev, payload.request],
             );
-            if (payload.request.targetName === playerName && payload.request.status === 'PENDING') {
-              setInboundRequest(payload.request);
-            }
           }
           if (payload.type === 'private:request-update') {
             setPrivateRequests((prev) => {
@@ -313,9 +348,6 @@ function App() {
               if (!exists) return [...prev, payload.request];
               return prev.map((item) => (item.id === payload.request.id ? payload.request : item));
             });
-            if (payload.request.targetName === playerName && payload.request.status !== 'PENDING') {
-              setInboundRequest(null);
-            }
           }
           if (payload.type === 'private:session-start') {
             setPrivateSessions((prev) =>
@@ -343,6 +375,17 @@ function App() {
                 payload.message,
               ],
             }));
+          }
+          if (payload.type === 'bulletin:new') {
+            const scope = bulletinScopeRef.current;
+            const hall = activeHallRef.current;
+            const matchesScope =
+              scope === 'all' || (hall ? payload.event.dayNumber === hall.dayNumber : false);
+            if (bulletinOpenRef.current && matchesScope) {
+              setBulletinEvents((prev) => [payload.event, ...prev]);
+            } else {
+              setBulletinUnread((prev) => prev + 1);
+            }
           }
           if (payload.type === 'system') {
             setNotice(payload.message);
@@ -390,6 +433,42 @@ function App() {
     };
   }, [activeHall, sessionToken]);
 
+  useEffect(() => {
+    if (connectionStatus !== 'online') return;
+    const timer = window.setInterval(() => {
+      wsRef.current?.send(JSON.stringify({ type: 'ping' }));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [connectionStatus]);
+
+  useEffect(() => {
+    if (!activeHall) return;
+    if (previousDayRef.current !== null && previousDayRef.current !== activeHall.dayNumber) {
+      setMessages([]);
+      setPrivateRequests([]);
+      setPrivateSessions([]);
+      setPrivateMessages({});
+      setActivePrivateSessionId(null);
+      setSelectedTargets([]);
+      setBulletinEvents([]);
+      setBulletinUnread(0);
+      setBulletinScope('today');
+    }
+    previousDayRef.current = activeHall.dayNumber;
+  }, [activeHall?.dayNumber]);
+
+  useEffect(() => {
+    setSelectedTargets((prev) =>
+      prev.filter((name) => eligibleTargets.some((player) => player.name === name)),
+    );
+  }, [eligibleTargets]);
+
+  useEffect(() => {
+    if (!bulletinOpen) return;
+    loadBulletins(bulletinScope);
+    setBulletinUnread(0);
+  }, [bulletinOpen, bulletinScope, activeHall?.dayNumber, activeHall?.code]);
+
   const activeHallSummary = useMemo(
     () => halls.find((hall) => hall.code === activeHall?.code) ?? null,
     [halls, activeHall?.code],
@@ -403,6 +482,40 @@ function App() {
   );
   const activePrivateMessages = activePrivateSessionId ? privateMessages[activePrivateSessionId] ?? [] : [];
   const onlineCount = roster.filter((player) => player.isOnline).length;
+  const eligibleTargets = useMemo(
+    () =>
+      roster.filter(
+        (player) =>
+          player.name !== playerName &&
+          player.role !== 'STORYTELLER' &&
+          player.isOnline &&
+          !player.inPrivate,
+      ),
+    [roster, playerName],
+  );
+  const inboundRequest = useMemo(
+    () =>
+      privateRequests.find(
+        (request) =>
+          request.status === 'PENDING' &&
+          request.dayNumber === activeHall?.dayNumber &&
+          request.targets.some((target) => target.name === playerName && target.status === 'PENDING'),
+      ) ?? null,
+    [privateRequests, playerName, activeHall?.dayNumber],
+  );
+  const decisionRequest = useMemo(
+    () =>
+      privateRequests.find(
+        (request) =>
+          request.status === 'DECISION' &&
+          request.dayNumber === activeHall?.dayNumber &&
+          request.initiatorName === playerName,
+      ) ?? null,
+    [privateRequests, playerName, activeHall?.dayNumber],
+  );
+  const inboundCountdown = inboundRequest
+    ? Math.max(0, Math.ceil((inboundRequest.expiresAt - clock) / 1000))
+    : null;
 
   function saveSession(session: SessionCache) {
     sessionStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
@@ -437,7 +550,7 @@ function App() {
         hall: HallDetail;
       }>(`/api/halls/${data.hallCode}/join`, {
         method: 'POST',
-        body: JSON.stringify({ playerName: '说书人', password: trimmedPassword }),
+        body: JSON.stringify({ playerName: '说书人', password: trimmedPassword, storytellerKey: data.storytellerKey }),
       });
 
       setActiveHall(joinData.hall);
@@ -500,8 +613,11 @@ function App() {
       });
       setActiveHall(data.hall);
       setMessages([]);
+      setPrivateRequests([]);
       setPrivateSessions([]);
       setPrivateMessages({});
+      setBulletinEvents([]);
+      setBulletinUnread(0);
     } catch (error) {
       setNotice((error as Error).message);
     }
@@ -532,9 +648,32 @@ function App() {
     setPrivateSessions([]);
     setPrivateMessages({});
     setActivePrivateSessionId(null);
-    setInboundRequest(null);
+    setSelectedTargets([]);
+    setBulletinEvents([]);
+    setBulletinUnread(0);
+    setBulletinOpen(false);
+    setBulletinScope('today');
+    previousDayRef.current = null;
     clearSession();
     setCurrentView('home');
+  }
+
+  async function loadBulletins(scope: 'today' | 'all') {
+    if (!activeHall || !sessionToken) return;
+    const dayParam = scope === 'all' && isStoryteller ? 'day=all' : `day=${activeHall.dayNumber}`;
+    try {
+      const data = await apiRequest<{ events: BulletinEvent[] }>(
+        `/api/halls/${activeHall.code}/bulletins?${dayParam}`,
+        {
+          headers: {
+            Authorization: `Bearer ${sessionToken}`,
+          },
+        },
+      );
+      setBulletinEvents(data.events);
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
   }
 
   function handleSendMessage(event: FormEvent<HTMLFormElement>) {
@@ -552,8 +691,18 @@ function App() {
     setChatDraft('');
   }
 
-  async function handleCreatePrivateRequest(targetName: string) {
+  function toggleTargetSelection(name: string) {
+    setSelectedTargets((prev) =>
+      prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name],
+    );
+  }
+
+  async function handleCreatePrivateRequest(targetNames: string[]) {
     if (!activeHall || !sessionToken) return;
+    if (targetNames.length === 0) {
+      setNotice('请先选择玩家');
+      return;
+    }
     if (isNight) {
       setNotice('黑夜中无法发起私聊');
       return;
@@ -564,19 +713,21 @@ function App() {
         headers: {
           Authorization: `Bearer ${sessionToken}`,
         },
-        body: JSON.stringify({ targetName }),
+        body: JSON.stringify({ targetNames }),
       });
-      setNotice(`已向 ${targetName} 发起私聊申请`);
+      const label = targetNames.length > 1 ? `${targetNames[0]} 等 ${targetNames.length} 人` : targetNames[0];
+      setNotice(`已向 ${label} 发起私聊申请`);
+      setSelectedTargets([]);
     } catch (error) {
       setNotice((error as Error).message);
     }
   }
 
-  async function handleRespondPrivateRequest(response: 'ACCEPT' | 'REJECT') {
-    if (!activeHall || !sessionToken || !inboundRequest) return;
+  async function handleRespondPrivateRequest(requestId: string, response: 'ACCEPT' | 'REJECT') {
+    if (!activeHall || !sessionToken) return;
     try {
       const data = await apiRequest<{ request: PrivateRequest; session: PrivateSession | null }>(
-        `/api/halls/${activeHall.code}/private-requests/${inboundRequest.id}/respond`,
+        `/api/halls/${activeHall.code}/private-requests/${requestId}/respond`,
         {
           method: 'POST',
           headers: {
@@ -588,7 +739,29 @@ function App() {
       setPrivateRequests((prev) =>
         prev.map((item) => (item.id === data.request.id ? data.request : item)),
       );
-      setInboundRequest(null);
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
+  }
+
+  async function handleDecidePrivateRequest(requestId: string, action: 'CANCEL' | 'START_ACCEPTED') {
+    if (!activeHall || !sessionToken) return;
+    try {
+      const data = await apiRequest<{ request: PrivateRequest; session?: PrivateSession | null }>(
+        `/api/halls/${activeHall.code}/private-requests/${requestId}/decide`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionToken}`,
+          },
+          body: JSON.stringify({ action }),
+        },
+      );
+      if (data.request) {
+        setPrivateRequests((prev) =>
+          prev.map((item) => (item.id === data.request.id ? data.request : item)),
+        );
+      }
     } catch (error) {
       setNotice((error as Error).message);
     }
@@ -819,21 +992,45 @@ function App() {
                       <div className="muted small">{player.isOnline ? '在线' : '离线'}</div>
                     </div>
                     <div className="roster-actions">
+                      {player.role === 'STORYTELLER' && <span className="tag">说书人</span>}
                       {player.inPrivate && <span className="tag">私聊中</span>}
                       {player.name === playerName ? (
                         <span className="tag">你</span>
                       ) : (
-                        <button
-                          className="btn ghost small"
-                          onClick={() => handleCreatePrivateRequest(player.name)}
-                          disabled={!player.isOnline || isNight}
+                        <label
+                          className={`checkbox ${
+                            player.role === 'STORYTELLER' || !player.isOnline || player.inPrivate ? 'disabled' : ''
+                          }`}
                         >
-                          申请私聊
-                        </button>
+                          <input
+                            type="checkbox"
+                            checked={selectedTargets.includes(player.name)}
+                            onChange={() => toggleTargetSelection(player.name)}
+                            disabled={
+                              isNight ||
+                              player.role === 'STORYTELLER' ||
+                              !player.isOnline ||
+                              player.inPrivate
+                            }
+                          />
+                          选择
+                        </label>
                       )}
                     </div>
                   </div>
                 ))}
+              </div>
+              <div className="button-row">
+                <button
+                  className="btn primary"
+                  onClick={() => handleCreatePrivateRequest(selectedTargets)}
+                  disabled={selectedTargets.length === 0 || isNight}
+                >
+                  发起私聊申请 {selectedTargets.length > 0 ? `(${selectedTargets.length})` : ''}
+                </button>
+                <button className="btn ghost" onClick={() => setSelectedTargets([])} disabled={selectedTargets.length === 0}>
+                  清空选择
+                </button>
               </div>
             </section>
 
@@ -879,42 +1076,93 @@ function App() {
               <div className="card-header">
                 <div>
                   <h3>私聊列表</h3>
-                  <p className="muted">从在线列表发起私聊申请。</p>
+                  <p className="muted">查看发起的申请与进行中的私聊。</p>
                 </div>
-                <span className="badge">{privateSessions.filter((session) => session.status === 'ACTIVE').length} 进行中</span>
+                <span className="badge">
+                  {privateSessions.filter(
+                    (session) => session.status === 'ACTIVE' && session.dayNumber === activeHall?.dayNumber,
+                  ).length}{' '}
+                  进行中
+                </span>
               </div>
               <div className="request-status">
-                {privateRequests.filter((req) => req.initiatorName === playerName).length === 0 && (
+                {privateRequests.filter((req) => req.initiatorName === playerName && req.dayNumber === activeHall?.dayNumber).length === 0 && (
                   <p className="muted">暂无发起的私聊申请。</p>
                 )}
                 {privateRequests
-                  .filter((req) => req.initiatorName === playerName)
+                  .filter((req) => req.initiatorName === playerName && req.dayNumber === activeHall?.dayNumber)
                   .slice(0, 3)
                   .map((req) => (
                     <div key={req.id} className="status-item">
-                      <strong>申请 {req.targetName}</strong>
+                      <strong>申请 {req.targets.map((target) => target.name).join('、')}</strong>
                       <span className="muted">
                         状态：
                         {req.status === 'PENDING' && '等待回应'}
-                        {req.status === 'ACCEPTED' && '已接受'}
-                        {req.status === 'REJECTED' && '已拒绝'}
+                        {req.status === 'DECISION' && '待你决定'}
+                        {req.status === 'COMPLETED' && '已完成'}
+                        {req.status === 'CANCELED' && '已取消'}
+                      </span>
+                      <span className="muted small">
+                        {req.targets.filter((target) => target.status === 'ACCEPTED').length} 同意 ·{' '}
+                        {req.targets.filter((target) => target.status === 'REJECTED').length} 拒绝 ·{' '}
+                        {req.targets.filter((target) => target.status === 'TIMEOUT').length} 超时 ·{' '}
+                        {req.targets.filter((target) => target.status === 'PENDING').length} 待回复
                       </span>
                     </div>
                   ))}
               </div>
               <div className="session-list">
-                {privateSessions.length === 0 && <p className="muted">暂无私聊会话。</p>}
-                {privateSessions.map((session) => (
-                  <div key={session.id} className="status-item">
-                    <strong>{session.participants.join('、')}</strong>
-                    <span className="muted">{session.status === 'ACTIVE' ? '进行中' : '已结束'}</span>
-                    {session.status === 'ACTIVE' && (
-                      <button className="btn ghost small" onClick={() => setActivePrivateSessionId(session.id)}>
-                        打开
-                      </button>
-                    )}
-                  </div>
-                ))}
+                {privateSessions.filter((session) => session.dayNumber === activeHall?.dayNumber).length === 0 && (
+                  <p className="muted">暂无私聊会话。</p>
+                )}
+                {privateSessions
+                  .filter((session) => session.dayNumber === activeHall?.dayNumber)
+                  .map((session) => (
+                    <div key={session.id} className="status-item">
+                      <strong>{session.participants.join('、')}</strong>
+                      <span className="muted">{session.status === 'ACTIVE' ? '进行中' : '已结束'}</span>
+                      {session.status === 'ACTIVE' && (
+                        <button className="btn ghost small" onClick={() => setActivePrivateSessionId(session.id)}>
+                          打开
+                        </button>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </section>
+
+            <section className="card bulletin-card">
+              <div className="card-header">
+                <div>
+                  <h3>公告板</h3>
+                  <p className="muted">查看当日私聊开始/结束记录。</p>
+                </div>
+                {bulletinUnread > 0 && <span className="badge">未读 {bulletinUnread}</span>}
+              </div>
+              <div className="bulletin-preview">
+                {bulletinEvents.length === 0 ? (
+                  <p className="muted">暂无公告记录。</p>
+                ) : (
+                  bulletinEvents.slice(0, 3).map((event) => (
+                    <div key={event.id} className="bulletin-item">
+                      <span>
+                        {event.type === 'PRIVATE_START' ? '开始私聊' : '结束私聊'} · {event.participants.join('、')}
+                      </span>
+                      <span>{formatTime(event.createdAt)}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="button-row">
+                <button
+                  className="btn secondary"
+                  onClick={() => {
+                    setBulletinOpen(true);
+                    setBulletinUnread(0);
+                  }}
+                >
+                  打开公告板
+                </button>
               </div>
             </section>
           </div>
@@ -930,14 +1178,83 @@ function App() {
             </div>
             <div className="modal-body">
               <p>你收到了来自 {inboundRequest.initiatorName} 的私聊申请。</p>
-              <p className="muted">参与人：{[inboundRequest.initiatorName, inboundRequest.targetName].join('、')}</p>
+              <p className="muted">
+                参与人：{[inboundRequest.initiatorName, ...inboundRequest.targets.map((target) => target.name)].join('、')}
+              </p>
+              <p className="muted">倒计时：{inboundCountdown ?? 0}s</p>
             </div>
             <div className="modal-footer">
-              <button className="btn secondary" onClick={() => handleRespondPrivateRequest('REJECT')}>
+              <button
+                className="btn secondary"
+                onClick={() => handleRespondPrivateRequest(inboundRequest.id, 'REJECT')}
+              >
                 拒绝
               </button>
-              <button className="btn primary" onClick={() => handleRespondPrivateRequest('ACCEPT')} disabled={isNight}>
+              <button
+                className="btn primary"
+                onClick={() => handleRespondPrivateRequest(inboundRequest.id, 'ACCEPT')}
+                disabled={isNight || (inboundCountdown ?? 0) <= 0}
+              >
                 同意
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {decisionRequest && (
+        <div className="modal-backdrop" onClick={() => undefined}>
+          <div className="modal">
+            <div className="modal-header">
+              <h3>私聊决策</h3>
+              <span className="tag">有人拒绝/超时</span>
+            </div>
+            <div className="modal-body">
+              <p className="muted">
+                申请对象：{decisionRequest.targets.map((target) => target.name).join('、')}
+              </p>
+              <div className="status-item">
+                <strong>同意</strong>
+                <span className="muted">
+                  {decisionRequest.targets.filter((target) => target.status === 'ACCEPTED').length === 0
+                    ? '无'
+                    : decisionRequest.targets
+                        .filter((target) => target.status === 'ACCEPTED')
+                        .map((target) => target.name)
+                        .join('、')}
+                </span>
+              </div>
+              <div className="status-item">
+                <strong>拒绝/超时</strong>
+                <span className="muted">
+                  {decisionRequest.targets.filter(
+                    (target) => target.status === 'REJECTED' || target.status === 'TIMEOUT',
+                  ).length === 0
+                    ? '无'
+                    : decisionRequest.targets
+                        .filter(
+                          (target) => target.status === 'REJECTED' || target.status === 'TIMEOUT',
+                        )
+                        .map((target) => target.name)
+                        .join('、')}
+                </span>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn secondary"
+                onClick={() => handleDecidePrivateRequest(decisionRequest.id, 'CANCEL')}
+              >
+                取消
+              </button>
+              <button
+                className="btn primary"
+                onClick={() => handleDecidePrivateRequest(decisionRequest.id, 'START_ACCEPTED')}
+                disabled={
+                  decisionRequest.targets.filter((target) => target.status === 'ACCEPTED').length === 0 || isNight
+                }
+              >
+                与同意者私聊
               </button>
             </div>
           </div>
@@ -982,6 +1299,59 @@ function App() {
                 发送
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {bulletinOpen && activeHall && (
+        <div className="drawer">
+          <div className="drawer-header">
+            <div>
+              <strong>公告板</strong>
+              <p className="muted">
+                {isStoryteller && bulletinScope === 'all'
+                  ? '全部天 · 私聊记录'
+                  : `第 ${activeHall.dayNumber} 天 · 私聊记录`}
+              </p>
+            </div>
+            <button className="btn ghost" onClick={() => setBulletinOpen(false)}>
+              关闭
+            </button>
+          </div>
+          <div className="drawer-body">
+            {isStoryteller && (
+              <div className="button-row">
+                <button
+                  className="btn secondary"
+                  onClick={() => setBulletinScope('today')}
+                  disabled={bulletinScope === 'today'}
+                >
+                  当前天
+                </button>
+                <button
+                  className="btn secondary"
+                  onClick={() => setBulletinScope('all')}
+                  disabled={bulletinScope === 'all'}
+                >
+                  全部天
+                </button>
+              </div>
+            )}
+            <div className="message-list compact">
+              {bulletinEvents.length === 0 ? (
+                <p className="muted">暂无公告记录。</p>
+              ) : (
+                bulletinEvents.map((event) => (
+                  <div key={event.id} className="message">
+                    <div className="message-meta">
+                      <strong>{event.type === 'PRIVATE_START' ? '开始私聊' : '结束私聊'}</strong>
+                      <span className="muted">{formatTime(event.createdAt)}</span>
+                    </div>
+                    <div>{event.participants.join('、')}</div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       )}

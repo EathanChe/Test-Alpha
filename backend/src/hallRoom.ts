@@ -14,6 +14,7 @@ type ConnectionInfo = {
 type RosterEntry = {
   name: string;
   isOnline: boolean;
+  role: string;
   inPrivate: boolean;
 };
 
@@ -35,12 +36,34 @@ type ChatMessage = {
 
 type PrivateRequest = {
   id: string;
-  initiatorId: string;
   initiatorName: string;
-  targetId: string;
-  targetName: string;
   status: string;
   createdAt: number;
+  expiresAt: number;
+  dayNumber: number;
+  targets: {
+    name: string;
+    status: string;
+    respondedAt: number | null;
+  }[];
+};
+
+type PrivateRequestGroupRow = {
+  id: string;
+  day_number: number;
+  initiator_name: string;
+  status: string;
+  created_at: number;
+  expires_at: number;
+  initiator_id: string;
+};
+
+type PrivateRequestTargetRow = {
+  request_id: string;
+  target_id: string;
+  target_name: string;
+  status: string;
+  responded_at: number | null;
 };
 
 type PrivateSession = {
@@ -58,6 +81,15 @@ type PrivateMessage = {
   sessionId: string;
   sender: string;
   content: string;
+  createdAt: number;
+};
+
+type BulletinEvent = {
+  id: string;
+  hallId: string;
+  dayNumber: number;
+  type: string;
+  participants: string[];
   createdAt: number;
 };
 
@@ -85,6 +117,7 @@ type ServerMessage =
   | { type: 'private:session-start'; session: PrivateSession }
   | { type: 'private:session-end'; sessionId: string; endedByName: string | null }
   | { type: 'private:message'; message: PrivateMessage }
+  | { type: 'bulletin:new'; event: BulletinEvent }
   | { type: 'pong' }
   | { type: 'system'; message: string };
 
@@ -202,9 +235,9 @@ export class HallRoom {
   }
 
   private async sendInit(ws: WebSocket, hallId: string, playerId: string) {
-    const messages = await this.fetchRecentMessages(hallId, 50);
-    const roster = await this.fetchRoster(hallId);
     const hall = await this.fetchHall(hallId);
+    const messages = await this.fetchRecentMessages(hallId, hall?.dayNumber ?? 1, 50);
+    const roster = await this.fetchRoster(hallId);
     const privateRequests = await this.fetchPrivateRequests(hallId, playerId);
     const privateSessions = await this.fetchPrivateSessions(hallId, playerId);
     const privateMessages = await this.fetchPrivateMessages(privateSessions);
@@ -228,11 +261,11 @@ export class HallRoom {
       .first<HallState>();
   }
 
-  private async fetchRecentMessages(hallId: string, limit: number) {
+  private async fetchRecentMessages(hallId: string, dayNumber: number, limit: number) {
     const result = await this.env.DB.prepare(
-      'SELECT id, hall_id as hallId, player_name as sender, content, created_at as createdAt FROM messages WHERE hall_id = ? ORDER BY created_at DESC LIMIT ?',
+      'SELECT id, hall_id as hallId, player_name as sender, content, created_at as createdAt FROM messages WHERE hall_id = ? AND day_number = ? ORDER BY created_at DESC LIMIT ?',
     )
-      .bind(hallId, limit)
+      .bind(hallId, dayNumber, limit)
       .all<ChatMessage>();
 
     return result.results.reverse();
@@ -243,6 +276,7 @@ export class HallRoom {
       `SELECT
         p.name as name,
         p.is_online as isOnline,
+        p.role as role,
         EXISTS (
           SELECT 1
           FROM private_session_members m
@@ -254,33 +288,76 @@ export class HallRoom {
       ORDER BY p.created_at`,
     )
       .bind(hallId)
-      .all<{ name: string; isOnline: number; inPrivate: number }>();
+    .all<{ name: string; isOnline: number; role: string; inPrivate: number }>();
 
     return result.results.map((row) => ({
       name: row.name,
       isOnline: row.isOnline === 1,
+      role: row.role,
       inPrivate: row.inPrivate === 1,
     }));
   }
 
   private async fetchPrivateRequests(hallId: string, playerId: string) {
+    await this.expireRequestsIfNeeded(hallId);
+
     const result = await this.env.DB.prepare(
-      `SELECT
-        id,
-        initiator_id as initiatorId,
-        initiator_name as initiatorName,
-        target_id as targetId,
-        target_name as targetName,
-        status,
-        created_at as createdAt
-      FROM private_requests
-      WHERE hall_id = ? AND status = 'PENDING' AND (target_id = ? OR initiator_id = ?)
-      ORDER BY created_at DESC`,
+      `SELECT DISTINCT
+        g.id as id,
+        g.day_number as dayNumber,
+        g.initiator_id as initiatorId,
+        g.initiator_name as initiatorName,
+        g.status as status,
+        g.created_at as createdAt,
+        g.expires_at as expiresAt
+      FROM private_request_groups g
+      LEFT JOIN private_request_targets t ON t.request_id = g.id
+      WHERE g.hall_id = ? AND g.status IN ('PENDING','DECISION')
+        AND (g.initiator_id = ? OR t.target_id = ?)
+      ORDER BY g.created_at DESC`,
     )
       .bind(hallId, playerId, playerId)
-      .all<PrivateRequest>();
+      .all<{
+        id: string;
+        dayNumber: number;
+        initiatorId: string;
+        initiatorName: string;
+        status: string;
+        createdAt: number;
+        expiresAt: number;
+      }>();
 
-    return result.results;
+    const requests: PrivateRequest[] = [];
+    for (const group of result.results) {
+      const targets = await this.env.DB.prepare(
+        `SELECT
+          request_id,
+          target_id,
+          target_name,
+          status,
+          responded_at
+        FROM private_request_targets
+        WHERE request_id = ?
+        ORDER BY target_name`,
+      )
+        .bind(group.id)
+        .all<PrivateRequestTargetRow>();
+      requests.push({
+        id: group.id,
+        initiatorName: group.initiatorName,
+        status: group.status,
+        createdAt: group.createdAt,
+        expiresAt: group.expiresAt,
+        dayNumber: group.dayNumber,
+        targets: targets.results.map((target) => ({
+          name: target.target_name,
+          status: target.status,
+          respondedAt: target.responded_at ?? null,
+        })),
+      });
+    }
+
+    return requests;
   }
 
   private async fetchPrivateSessions(hallId: string, playerId: string) {
@@ -333,6 +410,72 @@ export class HallRoom {
     return result;
   }
 
+  private async expireRequestsIfNeeded(hallId: string) {
+    const now = Date.now();
+    const expiredGroups = await this.env.DB.prepare(
+      "SELECT id FROM private_request_groups WHERE hall_id = ? AND status = 'PENDING' AND expires_at <= ?",
+    )
+      .bind(hallId, now)
+      .all<{ id: string }>();
+
+    for (const group of expiredGroups.results) {
+      await this.env.DB.prepare(
+        "UPDATE private_request_targets SET status = 'TIMEOUT', responded_at = ? WHERE request_id = ? AND status = 'PENDING'",
+      )
+        .bind(now, group.id)
+        .run();
+      await this.env.DB.prepare(
+        "UPDATE private_request_groups SET status = 'DECISION', decided_at = ? WHERE id = ? AND status = 'PENDING'",
+      )
+        .bind(now, group.id)
+        .run();
+
+      const groupRow = await this.env.DB.prepare(
+        `SELECT id, initiator_id as initiatorId, initiator_name as initiatorName, status, created_at as createdAt, expires_at as expiresAt, day_number as dayNumber
+         FROM private_request_groups WHERE id = ? LIMIT 1`,
+      )
+        .bind(group.id)
+        .first<{
+          id: string;
+          initiatorId: string;
+          initiatorName: string;
+          status: string;
+          createdAt: number;
+          expiresAt: number;
+          dayNumber: number;
+        }>();
+      if (!groupRow) continue;
+
+      const targets = await this.env.DB.prepare(
+        'SELECT target_id as targetId, target_name as targetName, status, responded_at as respondedAt FROM private_request_targets WHERE request_id = ? ORDER BY target_name',
+      )
+        .bind(group.id)
+        .all<{ targetId: string; targetName: string; status: string; respondedAt: number | null }>();
+
+      const recipients = new Set<string>([groupRow.initiatorId, ...targets.results.map((target) => target.targetId)]);
+      this.broadcastToHall(
+        {
+          type: 'private:request-update',
+          request: {
+            id: groupRow.id,
+            initiatorName: groupRow.initiatorName,
+            status: groupRow.status,
+            createdAt: groupRow.createdAt,
+            expiresAt: groupRow.expiresAt,
+            dayNumber: groupRow.dayNumber,
+            targets: targets.results.map((target) => ({
+              name: target.targetName,
+              status: target.status,
+              respondedAt: target.respondedAt ?? null,
+            })),
+          },
+          recipients: Array.from(recipients),
+        },
+        hallId,
+      );
+    }
+  }
+
   private async broadcastPresence(hallId: string) {
     const roster = await this.fetchRoster(hallId);
     const payload: ServerMessage = { type: 'presence:update', roster };
@@ -357,9 +500,9 @@ export class HallRoom {
     const hall = await this.fetchHall(hallId);
     if (hall?.phase === 'NIGHT') {
       ws.send(JSON.stringify({ type: 'system', message: '黑夜中无法执行该操作。' } satisfies ServerMessage));
-      return false;
+      return null;
     }
-    return true;
+    return hall;
   }
 
   private async handleMessage(ws: WebSocket, event: MessageEvent) {
@@ -376,6 +519,7 @@ export class HallRoom {
     if (!payload) return;
 
     if (payload.type === 'ping') {
+      await this.expireRequestsIfNeeded(info.hallId);
       ws.send(JSON.stringify({ type: 'pong' } satisfies ServerMessage));
       return;
     }
@@ -383,7 +527,8 @@ export class HallRoom {
     if (payload.type === 'chat:send') {
       const content = (payload.content ?? '').trim();
       if (!content) return;
-      if (!(await this.ensureDay(ws, info.hallId))) return;
+      const hall = await this.ensureDay(ws, info.hallId);
+      if (!hall) return;
       const message: ChatMessage = {
         id: crypto.randomUUID(),
         hallId: info.hallId,
@@ -393,9 +538,9 @@ export class HallRoom {
       };
 
       await this.env.DB.prepare(
-        'INSERT INTO messages (id, hall_id, player_id, player_name, content, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO messages (id, hall_id, player_id, player_name, content, day_number, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-        .bind(message.id, info.hallId, info.playerId, info.playerName, message.content, message.createdAt)
+        .bind(message.id, info.hallId, info.playerId, info.playerName, message.content, hall.dayNumber, message.createdAt)
         .run();
 
       this.broadcastToHall({ type: 'chat:new', message }, info.hallId);
@@ -444,6 +589,35 @@ export class HallRoom {
         .bind('ENDED', now, info.playerName, sessionId)
         .run();
 
+      const sessionRow = await this.env.DB.prepare(
+        'SELECT day_number as dayNumber FROM private_sessions WHERE id = ? LIMIT 1',
+      )
+        .bind(sessionId)
+        .first<{ dayNumber: number }>();
+      if (sessionRow) {
+        const participantNames = members.map((member) => member.playerName);
+        const eventId = crypto.randomUUID();
+        await this.env.DB.prepare(
+          'INSERT INTO bulletin_events (id, hall_id, day_number, type, participants, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        )
+          .bind(eventId, info.hallId, sessionRow.dayNumber, 'PRIVATE_END', JSON.stringify(participantNames), now)
+          .run();
+        this.broadcastToHall(
+          {
+            type: 'bulletin:new',
+            event: {
+              id: eventId,
+              hallId: info.hallId,
+              dayNumber: sessionRow.dayNumber,
+              type: 'PRIVATE_END',
+              participants: participantNames,
+              createdAt: now,
+            },
+          },
+          info.hallId,
+        );
+      }
+
       this.broadcastToHall(
         {
           type: 'private:session-end',
@@ -453,6 +627,7 @@ export class HallRoom {
         },
         info.hallId,
       );
+      await this.broadcastPresence(info.hallId);
     }
   }
 
